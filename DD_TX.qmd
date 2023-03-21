@@ -1,0 +1,324 @@
+---
+title: "Digital_Divide_TX"
+format: html
+editor: visual
+---
+
+## Quarto
+
+Quarto enables you to weave together content and executable code into a finished document. To learn more about Quarto see <https://quarto.org>.
+
+## Running Code
+
+When you click the **Render** button a document will be generated that includes both content and the output of embedded code. You can embed code like this:
+
+```{r}
+install.packages(c('tidyverse', 'tidycensus', 'plotly'))
+library(tidycensus)
+library(tidycensus)
+library(data.table)
+library(plotly)
+
+######Pulling relevant ACS Data from ACS Census API######
+
+##would need to install census API Key
+census_api_key('d64872651477534fe8359bdc634b5b60b2fd0256', install = TRUE )
+
+##grab all 5 year ACS variables 2016-2020
+v20 <- load_variables(2020, "acs5", cache = TRUE)
+
+#Pull internet access, internet access by age, race, income, education level, median income, total population, device allocation
+df_internet = v20 %>% 
+  filter(grepl('B28002|B19013_001|B01003|B09019_002|B28005|B28009|B28004|B28006|B28001', name)) %>%
+  unique() 
+
+#B09019_002 - total households
+#B01003_001 - total population
+
+df_internet_= df_internet %>%
+  mutate(race = dplyr::case_when(
+    grepl("B28009A", name) ~"White",
+    grepl("B28009B", name) ~"Black",
+    grepl("B28009C", name) ~"Native American/Indigenous",
+    grepl("B28009D", name) ~"Asian",
+    grepl("B28009E", name) ~"API",
+    grepl("B28009F", name) ~"Other (one other race alone)",
+    grepl("B28009G", name) ~"Multi-Racial (two or more races)",
+    grepl("B28009H", name) ~"White Alone (not Latino/hispanic)",
+    grepl("B28009I", name) ~"Latino/hispanic",
+    TRUE ~ "")) %>%
+  mutate(label = paste(label, race)) %>%
+  select(-race) %>%
+  filter(!grepl('B28002',name))
+
+#make list of dependent variable codes and corresponding names
+var_list_ = unlist(list(df_internet_$name))
+name_list_ = unlist(list(df_internet_$label))
+
+#make list of response variable codes and corresponding names
+resp_var = df_internet %>%
+  filter(grepl('B28002',name))
+
+resp_var_list_ = unlist(list(resp_var$name))
+resp_name_list_ = unlist(list(resp_var$label))
+
+#Requested dependent variables by county in Texas from 2016-2020
+tex_population_20 = get_acs(
+  geography = "county",
+  variables = var_list_,
+  state = "TX",
+  year = 2020,
+  output = "wide",
+  cache_table = TRUE)
+
+#Requested response variable by county in Texas from 2016-2020
+resp_tex_population_20 = get_acs(
+  geography = "county",
+  variables = resp_var_list_,
+  state = "TX",
+  year = 2020,
+  output = "wide",
+  cache_table = TRUE)
+
+# Select column names that end with 'E'to grab all estimates
+cols_to_rename <- grep("\\d\\E$", colnames(tex_population_20), value = TRUE)
+cols_to_rename_resp <- grep("\\d\\E$", colnames(resp_tex_population_20), value = TRUE)
+
+# Rename the selected columns with names from the list
+setnames(tex_population_20, old = cols_to_rename, new = name_list_)
+setnames(resp_tex_population_20, old = cols_to_rename_resp, new = resp_name_list_)
+
+#drop MOE variables
+
+data = tex_population_20[, -grep("\\d\\M$", colnames(tex_population_20))]
+resp_data = resp_tex_population_20[, -grep("\\d\\M$", colnames(resp_tex_population_20))]
+colnames(data)[3] = 'Households per county'
+
+#Calculate response variable, pop_without_internet == no internet + dial-up
+
+response_data = resp_data %>%
+  mutate(pop_without_internet = `Estimate!!Total:!!No Internet access` + `Estimate!!Total:!!With an Internet subscription!!Dial-up with no other type of Internet subscription`) %>%
+  dplyr::select(GEOID,pop_without_internet)
+
+#########Data Cleaning and Merging#########
+
+###Dependent Variables####
+
+#rename some variables to make data cleaning easier
+colnames(data) = gsub("Estimate!!Total:!!Has one or more types of computing devices:!!", "Estimate:Total:Has one or more types of computing devices:", colnames(data))
+
+#look at
+#dplyr::glimpse(data)
+
+#variables of interest (not per capita). Removing any variable that has the contained phrases: "Has a computer", "No [Cc]omputer", "no other type of computing device", "Multi-Racial", as well as anything that starts with Estimate!!Total:!! and has the symbols !! after, and also that ends in a space character"
+
+depend_data = data[, -grep("(\\bHas\\b\\s\\ba\\b\\s\\bcomputer\\b)|(Estimate!!Total:!!.*:!!)|(Estimate!!Total: $)|(\\bNo\\b\\s\\b[Cc]omputer\\b)\\s+|(\\bno\\s\\bother\\b\\s\\btype\\b\\s\\bof\\b\\s\\bcomputing\\b\\s\\bdevice\\b)|(\\bMulti-Racial\\b)|(\\bhouseholds\\b):|(\\bdevices\\b):\\s+", colnames(data), perl = TRUE)]
+
+####Merge independent variable data and dependent variable data into a single dataframe####
+
+data_merge = merge(depend_data, response_data, by = 'GEOID')
+
+#function to apply to generate per capita data
+
+per_capita = function(x){100*(x / data_merge$`Households per county`)}
+
+#final dataframe ready for analysis
+
+data_final = data_merge %>%
+  mutate(across(5:29, per_capita))
+
+##normalize the data (per capita), talk through ways to analyze the data and visualize the data in maps. Potentially a variable that indicates rural vs. urban
+```
+
+You can add options to executable code like this
+
+```{r}
+#| echo: false
+
+##Linear Regression
+
+test_ = lm(data = data_final[,-c(1:3)], pop_without_internet~.)
+summary(test_)
+
+#Relative importance calculations
+library(relaimpo)
+re_scal=calc.relimp(test_, type = "lmg", rela = TRUE)
+print(re_scal)
+plot(re_scal)
+```
+
+```{r}
+##Mapping some initial variables
+library(tidyr)
+
+tx_internet <- get_acs(
+  geography = "county",
+  state = "TX",
+  variables = c(
+    No_internet = "B28002_013",
+    Dial_up = "B28002_003"),
+  summary_var = "B01003_001",
+  year = 2020,
+  geometry = TRUE
+) 
+
+x = tx_internet %>%
+  tidyr::pivot_wider(names_from = "variable", values_from = c("estimate", "moe", "summary_est", "summary_moe", "geometry"))
+
+x_ = x %>%
+  mutate(value = estimate_Dial_up + estimate_No_internet,
+         summary_value = (summary_est_Dial_up + summary_est_No_internet)/2,
+         percent_no_internet = 100 * (value / summary_value),
+         geometry = geometry_Dial_up) %>%
+  dplyr::select(GEOID, NAME, value, summary_value, percent_no_internet, geometry) %>%
+  mutate(variable = "no internet")
+
+##have no internet access data in above DF with geopgraphy data, now need to throw that into a map##
+
+```
+
+```{r}
+# Shiny App to visualize % of Texas in each county that doesn't have access to internet
+library(shiny)
+library(leaflet)
+library(tidycensus)
+
+groups = c("Population with no internet access" = "no internet")
+
+ui <- fluidPage(
+  titlePanel(h1("Visualizing the Digital Divide in Texas", align = "center"),
+             br()),
+  sidebarLayout(
+    sidebarPanel(
+      selectInput(
+        inputId = "group",
+        label = "Select a group to map",
+        choices = groups
+      ),
+      p("No internet access is defined as not having access to ", 
+        strong("broadband-speed"), 
+        "internet. Therefore, those who have access to dial-up are included in the no internet estimate as dial-up speeds are slower than broadband."),
+      br(),
+      br(),
+      p("The map is populated by data from the American Commnunity Survey Census, years 2016-2020."),
+    ),
+    mainPanel(
+      leafletOutput("map", height = "600")
+    )
+  )
+)
+
+server <- function(input, output) {
+  
+  # Reactive function that filters for the selected group in the drop-down menu
+  group_to_map <- reactive({
+    filter(x_, variable == input$group)
+  })
+  
+  # Initialize the map object, centered on the Minneapolis-St. Paul area
+  output$map <- renderLeaflet({
+
+    leaflet(options = leafletOptions(zoomControl = TRUE)) %>%
+      addProviderTiles(providers$Stamen.TonerLite) %>%
+      setView(lng = -100.00,
+              lat = 31.00,
+              zoom = 5.0)
+
+  })
+  
+  observeEvent(input$group, {
+    
+    pal <- colorNumeric("viridis", group_to_map()$percent_no_internet)
+    
+    leafletProxy("map") %>%
+      clearShapes() %>%
+      clearControls() %>%
+      addPolygons(data = group_to_map(),
+                  color = ~pal(percent_no_internet),
+                  weight = 0.5,
+                  fillOpacity = 0.5,
+                  smoothFactor = 0.2,
+                  label = ~percent_no_internet) %>%
+      addLegend(
+        position = "bottomright",
+        pal = pal,
+        values = group_to_map()$percent_no_internet,
+        title = "% of population"
+      )
+  })
+  
+}
+
+shinyApp(ui = ui, server = server)
+```
+
+The `echo: false` option disables the printing of code (only output is displayed).
+
+```{r}
+# ##find all relevant variables that relate to internet access
+# result = as.data.frame(grep("INTERNET", v20$concept, value = TRUE))
+# colnames(result) = c('x')
+# 
+# ##Pull internet access, internet access by race, age, income, education level, median income, total population
+# 
+# df_internet = merge(v20, result, by.x = 'concept', by.y = 'x') %>% 
+#   filter(grepl('B28003|B28005|B28009|B28004|B28006|B19013_001|B01003', name)) %>%
+#   unique() 
+# 
+# #Add other relevant variables to var_list (median income)
+# var_list = unlist(list(df_internet$name,"B19013_001"))
+
+#drop MOE variables
+#data_MOE = dplyr::select(tex_population_20, -ends_with("M"))
+
+
+# m = data[,grep("(:\\s*)$", colnames(data))]
+# 
+# n = data[,grep("^.*(.*:!!.*){1}.*$", colnames(data))]
+# 
+# r = data[, grep("(.*[:!!]){1,1}(.*!!){1,1}", colnames(data), perl = TRUE)]
+# 
+# p = data[,grep("\\w+!!\\w+:!!", colnames(data))]
+# 
+# q = data[, grepl("(Estimate!!Total:!!.*:!!)", colnames(data), perl = TRUE)]
+
+
+# data_clean_v1 = data[, -grep("^.*([Cc]omputer\\s+)$", colnames(data), perl = TRUE)]
+# 
+# data_clean_v2 = data_clean[ ,-grep("(Estimate!!Total: $)|(.*[Cc]omputer$)", colnames(data_clean), perl = TRUE)]
+# 
+# data_clean_v3 = data[ ,-grep("(Estimate!!Total:!!.*:!!)|(Estimate!!Total: $)|([Cc]omputer)", colnames(data), perl = TRUE)]
+
+
+# v21 <- load_variables(2020, "pl" ,cache = TRUE)
+# tex_block_20 = get_decennial(
+#   geography = "block",
+#   variables = "H1_001N",
+#   state = "TX",
+#   year = 2020,
+#   output = "wide",
+#   cache_table = TRUE)
+
+
+#shrinkage/variable selection needed
+
+# #3. Run lasso regression to determine variables to use
+# library(glmnet)
+# 
+# #define matrix of predictors
+# x=data.matrix(data_final[,c(-1:-3)])
+# 
+# #define response matrix
+# y=data_final$pop_without_internet
+# 
+# #perform k-fold cross-validation to find optimal lambda value
+# cv_model=cv.glmnet(x, y, alpha = 1)
+# 
+# #find optimal lambda value that minimizes test MSE
+# best_lambda <- cv_model$lambda.min
+# best_lambda
+# 
+# #find variables included in best model using lasso
+# best_model <- glmnet(x, y, alpha = 1, lambda = best_lambda)
+# coef(best_model)
+```
