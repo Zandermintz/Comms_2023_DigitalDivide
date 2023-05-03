@@ -13,11 +13,17 @@ Quarto enables you to weave together content and executable code into a finished
 When you click the **Render** button a document will be generated that includes both content and the output of embedded code. You can embed code like this:
 
 ```{r}
-install.packages(c('tidyverse', 'tidycensus', 'plotly'))
+install.packages(c('tidyverse', 'tidycensus', 'plotly', 'data.table', 'relaimpo', 'tidyr', 'shiny', 'leaflet'))
+
 library(tidycensus)
-library(tidycensus)
+library(tidyverse)
 library(data.table)
+library(relaimpo)
+library(tidyr)
+library(shiny)
+library(leaflet)
 library(plotly)
+
 
 ######Pulling relevant ACS Data from ACS Census API######
 
@@ -127,7 +133,7 @@ per_capita = function(x){100*(x / data_merge$`Households per county`)}
 data_final = data_merge %>%
   mutate(across(5:29, per_capita))
 
-##normalize the data (per capita), talk through ways to analyze the data and visualize the data in maps. Potentially a variable that indicates rural vs. urban
+##normalize the data (per capita), talk through ways to analyze the data and visualize the data in maps. Potentially a variable that indicates rural vs. urban 
 ```
 
 You can add options to executable code like this
@@ -141,7 +147,6 @@ test_ = lm(data = data_final[,-c(1:3)], pop_without_internet~.)
 summary(test_)
 
 #Relative importance calculations
-library(relaimpo)
 re_scal=calc.relimp(test_, type = "lmg", rela = TRUE)
 print(re_scal)
 plot(re_scal)
@@ -149,7 +154,6 @@ plot(re_scal)
 
 ```{r}
 ##Mapping some initial variables
-library(tidyr)
 
 tx_internet <- get_acs(
   geography = "county",
@@ -157,7 +161,7 @@ tx_internet <- get_acs(
   variables = c(
     No_internet = "B28002_013",
     Dial_up = "B28002_003"),
-  summary_var = "B01003_001",
+  summary_var = "B09019_002",
   year = 2020,
   geometry = TRUE
 ) 
@@ -173,17 +177,86 @@ x_ = x %>%
   dplyr::select(GEOID, NAME, value, summary_value, percent_no_internet, geometry) %>%
   mutate(variable = "no internet")
 
+##Adding all additional variables for map
+
+tx_socioecon = get_acs(
+  geography = "county",
+  variables = var_list_,
+  state = "TX",
+  summary_var = "B09019_002",
+  year = 2020,
+  geometry = TRUE,
+  cache_table = TRUE)
+
+tx_socioecon_= tx_socioecon %>%
+  mutate(variables = dplyr::case_when(
+    grepl("B28009A_005", variable) ~"White - without internet",
+    grepl("B28009B_005", variable) ~"Black - without internet",
+    grepl("B28009C_005", variable) ~"Native American/Indigenous - without internet",
+    grepl("B28009D_005", variable) ~"Asian - without internet",
+    grepl("B28009E_005", variable) ~"API - without internet",
+    grepl("B28009F_005", variable) ~"Other (one other race alone) - without internet",
+    grepl("B28009H_005", variable) ~"White Alone (not Latino/hispanic) - without internet",
+    grepl("B28009I_005", variable) ~"Latino/hispanic - without internet",
+    #grepl("B19013", variable)  ~"Median Household Income",
+    grepl("B28005_018", variable) ~"65 and older - without internet",
+    grepl("B28005_012", variable) ~"18 to 64 years old - without internet",
+    grepl("B28005_006", variable) ~"Under 18 years old - without internet",
+    grepl("B28004_025", variable) ~"Annual Income of $75,000+ - without internet",
+    grepl("B28004_021", variable) ~"Annual Income between $50,000-$74,999 - without internet",
+    grepl("B28004_017", variable) ~"Annual Income between $35,000-$49,999 - without internet",
+    grepl("B28004_013", variable) ~"Annual Income between $20,000-$34,999 - without internet",
+    grepl("B28004_009", variable) ~"Annual Income between $10,000-$19,999 - without internet",
+    grepl("B28004_005", variable) ~"Annual Income lower than $10,000 - without internet",
+    grepl("B28006_018", variable) ~"Bachelor's Degree or Higher - without internet",
+    grepl("B28006_012", variable) ~"High School Graduate and Equivalency - without internet",
+    grepl("B28006_006", variable) ~"Less than High School Graduate or Equivalency - without internet",
+    grepl("B28001_007", variable) ~"Has one or more types of computing devices: Tablet or other portable wireless computer",
+    grepl("B28001_005", variable) ~"Has one or more types of computing devices: Smartphone",
+    grepl("B28001_003", variable) ~"Has one or more types of computing devices: Desktop or Laptop",
+    grepl("B28001_009", variable) ~"Has one or more tyeps of computing devices: Other computer",
+    TRUE ~ "")) %>%
+  dplyr::filter(!variables == "") %>%
+  dplyr::select(-variable)
+
+map_data = tx_socioecon_ %>%
+  dplyr::mutate(household_per_county = 100 * (estimate / summary_est)) %>%
+  dplyr::select(GEOID, NAME, variables, estimate, summary_est, household_per_county, geometry)
+
 ##have no internet access data in above DF with geopgraphy data, now need to throw that into a map##
 
 ```
 
 ```{r}
 # Shiny App to visualize % of Texas in each county that doesn't have access to internet
-library(shiny)
-library(leaflet)
-library(tidycensus)
 
-groups = c("Population with no internet access" = "no internet")
+#groups = c("Population with no internet access" = "no internet")
+
+groups = c("White - without internet",
+            "Black - without internet",
+            "Native American/Indigenous - without internet",
+            "Asian - without internet",
+            "API - without internet",
+            "Other (one other race alone) - without internet",
+            "White Alone (not Latino/hispanic) - without internet",
+            "Latino/hispanic - without internet",
+            #"Median Household Income",
+            "65 and older - without internet",
+            "18 to 64 years old - without internet",
+            "Under 18 years old - without internet",
+            "Annual Income of $75,000+ - without internet",
+            "Annual Income between $50,000-$74,999 - without internet",
+            "Annual Income between $35,000-$49,999 - without internet",
+            "Annual Income between $20,000-$34,999 - without internet",
+            "Annual Income between $10,000-$19,999 - without internet",
+            "Annual Income lower than $10,000 - without internet",
+            "Bachelor's Degree or Higher - without internet",
+            "High School Graduate and Equivalency - without internet",
+            "Less than High School Graduate or Equivalency - without internet",
+            "Has one or more types of computing devices: Tablet or other portable wireless computer",
+            "Has one or more types of computing devices: Smartphone",
+            "Has one or more types of computing devices: Desktop or Laptop",
+            "Has one or more tyeps of computing devices: Other computer")
 
 ui <- fluidPage(
   titlePanel(h1("Visualizing the Digital Divide in Texas", align = "center"),
@@ -195,12 +268,15 @@ ui <- fluidPage(
         label = "Select a group to map",
         choices = groups
       ),
-      p("No internet access is defined as not having access to ", 
-        strong("broadband-speed"), 
-        "internet. Therefore, those who have access to dial-up are included in the no internet estimate as dial-up speeds are slower than broadband."),
+      p("This visualization shows the percent of households in Texas counties ", 
+        strong("without a high-speed internet subscription."), 
+        "That is, households where maximum internet speed is less than 25/3 Mbps down/up."),
       br(),
       br(),
-      p("The map is populated by data from the American Commnunity Survey Census, years 2016-2020."),
+      p("To use this interactive map, toggle the dropdown to your group of interest. Once selected, the map should update with that group's data. You are able to zoom in as well as hover over counties to see specific data points."),
+      br(),
+      br(),
+      p("This map is populated by data from the American Commnunity Survey Census, years 2016-2020."),
     ),
     mainPanel(
       leafletOutput("map", height = "600")
@@ -212,7 +288,7 @@ server <- function(input, output) {
   
   # Reactive function that filters for the selected group in the drop-down menu
   group_to_map <- reactive({
-    filter(x_, variable == input$group)
+    filter(map_data, variables == input$group)
   })
   
   # Initialize the map object, centered on the Minneapolis-St. Paul area
@@ -228,28 +304,43 @@ server <- function(input, output) {
   
   observeEvent(input$group, {
     
-    pal <- colorNumeric("viridis", group_to_map()$percent_no_internet)
+    pal <- colorNumeric("viridis", group_to_map()$household_per_county)
     
     leafletProxy("map") %>%
       clearShapes() %>%
       clearControls() %>%
       addPolygons(data = group_to_map(),
-                  color = ~pal(percent_no_internet),
+                  color = ~pal(household_per_county),
                   weight = 0.5,
                   fillOpacity = 0.5,
                   smoothFactor = 0.2,
-                  label = ~percent_no_internet) %>%
+                  label = ~household_per_county) %>%
       addLegend(
         position = "bottomright",
         pal = pal,
-        values = group_to_map()$percent_no_internet,
-        title = "% of population"
+        values = group_to_map()$household_per_county,
+        title = "Percent of Households per County"
       )
   })
   
 }
 
 shinyApp(ui = ui, server = server)
+```
+
+```{r}
+##Creating Appendix Output
+
+appendix_df = map_data %>%
+  dplyr::select(GEOID, NAME, variables, household_per_county) %>%
+  tidyr::pivot_wider(names_from = "variables", values_from = "household_per_county") %>%
+  mutate(across(where(is.numeric), round, digits = 2)) %>%
+  dplyr::select(-27)
+
+##Output to excel
+install.packages("writexl")
+library(writexl)
+write_xlsx(appendix_df, "appendix_data.xlsx")
 ```
 
 The `echo: false` option disables the printing of code (only output is displayed).
